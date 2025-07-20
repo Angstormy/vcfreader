@@ -117,7 +117,6 @@ bot.on("message:document", async (ctx) => {
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
 
-        // Parse the VCF content
         const contacts: { name: string, tel: string }[] = [];
         let currentContact: { name?: string, tel?: string } = {};
 
@@ -126,41 +125,35 @@ bot.on("message:document", async (ctx) => {
         for (const line of lines) {
             const upperLine = line.toUpperCase();
 
-            // When we find the start of a new card, reset the current contact
             if (upperLine.startsWith("BEGIN:VCARD")) {
                 currentContact = {};
             }
 
-            // Look for both FN (Full Name) and N (Name) fields
             if (upperLine.startsWith("FN:") || upperLine.startsWith("N:")) {
                 currentContact.name = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
             }
 
-            // Look for any TEL field
-            if (upperLine.startsWith("TEL")) { // More generic check for TEL
+            if (upperLine.startsWith("TEL")) {
                 currentContact.tel = line.substring(line.lastIndexOf(":") + 1).trim();
             }
 
-            // When we find the end of the card, save it if it's valid
             if (upperLine.startsWith("END:VCARD")) {
                 if (currentContact.name && currentContact.tel) {
                     contacts.push({ name: currentContact.name, tel: currentContact.tel });
                 }
-                currentContact = {}; // Reset for the next one
+                currentContact = {};
             }
         }
 
-        if (contacts.length === <strong>0</strong>) {
-            // This message now means it truly couldn't find compatible contacts
+        // THIS IS THE CORRECTED LINE
+        if (contacts.length === 0) {
             return ctx.reply("Could not find any valid contacts in the VCF file. Please ensure each contact has a name (N: or FN:) and a phone number (TEL:).");
         }
 
-        // Format and send the reply
         let table = '<b>Processed Contacts</b>\n<pre>';
         table += 'Name                 | Phone Number\n';
         table += '-------------------- | ------------------\n';
         for (const contact of contacts) {
-            // Sanitize name to prevent breaking the <pre> tag with HTML characters
             const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             const paddedName = sanitizedName.padEnd(20, ' ');
             table += `${paddedName} | ${contact.tel}\n`;
