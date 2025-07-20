@@ -97,7 +97,7 @@ bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => {
 });
 
 
-// --- 5. VCF File Processing Logic (Final Robust Parser) ---
+// --- 5. VCF File Processing Logic (Definitive Parser) ---
 bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
 
@@ -117,30 +117,47 @@ bot.on("message:document", async (ctx) => {
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
 
-        // New, more robust parsing method
+        // New, highly robust parsing method
         const contacts: { name: string, tel: string }[] = [];
-        // Split the file into individual VCard blocks
+        // Split the entire file into individual VCard blocks
         const vcardBlocks = fileContent.split("BEGIN:VCARD");
 
         for (const block of vcardBlocks) {
             if (block.trim() === "") continue;
 
-            // Use regular expressions to find the name and telephone number
-            const nameMatch = block.match(/(?:FN|N):(.*)/i);
-            const telMatch = block.match(/TEL(?:;[^:]*)?:(.*)/i);
+            let contactName: string | null = null;
+            let contactTel: string | null = null;
 
-            if (nameMatch && telMatch) {
-                const name = nameMatch[1].replace(/;/g, ' ').trim();
-                const tel = telMatch[1].trim();
-                contacts.push({ name, tel });
+            // Split each block into lines to process it
+            const lines = block.split(/\r?\n/);
+            for (const line of lines) {
+                // Find the name, preferring FN (Full Name) but accepting N (Name)
+                if (line.toUpperCase().startsWith("FN:")) {
+                    contactName = line.substring(line.indexOf(":") + 1).trim();
+                } else if (!contactName && line.toUpperCase().startsWith("N:")) {
+                    // Only use N if FN hasn't been found yet
+                    contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
+                }
+                
+                // Find the telephone number, ensuring it's not empty
+                if (line.toUpperCase().startsWith("TEL")) {
+                    const potentialTel = line.substring(line.lastIndexOf(":") + 1).trim();
+                    if (potentialTel) { // Only assign if it's not an empty string
+                        contactTel = potentialTel;
+                    }
+                }
+            }
+            
+            // If we successfully found both a name and a number, save the contact
+            if (contactName && contactTel) {
+                contacts.push({ name: contactName, tel: contactTel });
             }
         }
 
         if (contacts.length === 0) {
-            return ctx.reply("Could not find any valid contacts in the VCF file. Please ensure each contact has both a name (N: or FN:) and a phone number (TEL:).");
+            return ctx.reply("Could not find any valid contacts. Please ensure each contact in the VCF file has both a name (FN: or N:) and a phone number (TEL:).");
         }
 
-        // Format and send the reply
         let table = '<b>Processed Contacts</b>\n<pre>';
         table += 'Name                 | Phone Number\n';
         table += '-------------------- | ------------------\n';
