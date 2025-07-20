@@ -97,7 +97,7 @@ bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => {
 });
 
 
-// --- 5. VCF File Processing Logic (Improved & More Robust Version) ---
+// --- 5. VCF File Processing Logic (Final Robust Parser) ---
 bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
 
@@ -117,39 +117,30 @@ bot.on("message:document", async (ctx) => {
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
 
+        // New, more robust parsing method
         const contacts: { name: string, tel: string }[] = [];
-        let currentContact: { name?: string, tel?: string } = {};
+        // Split the file into individual VCard blocks
+        const vcardBlocks = fileContent.split("BEGIN:VCARD");
 
-        const lines = fileContent.split(/\r?\n/);
+        for (const block of vcardBlocks) {
+            if (block.trim() === "") continue;
 
-        for (const line of lines) {
-            const upperLine = line.toUpperCase();
+            // Use regular expressions to find the name and telephone number
+            const nameMatch = block.match(/(?:FN|N):(.*)/i);
+            const telMatch = block.match(/TEL(?:;[^:]*)?:(.*)/i);
 
-            if (upperLine.startsWith("BEGIN:VCARD")) {
-                currentContact = {};
-            }
-
-            if (upperLine.startsWith("FN:") || upperLine.startsWith("N:")) {
-                currentContact.name = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
-            }
-
-            if (upperLine.startsWith("TEL")) {
-                currentContact.tel = line.substring(line.lastIndexOf(":") + 1).trim();
-            }
-
-            if (upperLine.startsWith("END:VCARD")) {
-                if (currentContact.name && currentContact.tel) {
-                    contacts.push({ name: currentContact.name, tel: currentContact.tel });
-                }
-                currentContact = {};
+            if (nameMatch && telMatch) {
+                const name = nameMatch[1].replace(/;/g, ' ').trim();
+                const tel = telMatch[1].trim();
+                contacts.push({ name, tel });
             }
         }
 
-        // THIS IS THE CORRECTED LINE
         if (contacts.length === 0) {
-            return ctx.reply("Could not find any valid contacts in the VCF file. Please ensure each contact has a name (N: or FN:) and a phone number (TEL:).");
+            return ctx.reply("Could not find any valid contacts in the VCF file. Please ensure each contact has both a name (N: or FN:) and a phone number (TEL:).");
         }
 
+        // Format and send the reply
         let table = '<b>Processed Contacts</b>\n<pre>';
         table += 'Name                 | Phone Number\n';
         table += '-------------------- | ------------------\n';
