@@ -97,45 +97,62 @@ bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => {
 });
 
 
-// --- 5. VCF File Processing Logic (Corrected Version) ---
+// --- 5. VCF File Processing Logic (Improved & More Robust Version) ---
 bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
+
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
         return ctx.reply("Please send a valid `.vcf` file.");
     }
     await ctx.reply("⏳ Processing your VCF file...");
+
     try {
-        // Get the file object from Telegram
         const file = await ctx.getFile();
-        // **FIX:** Construct the full file URL manually
         const filePath = file.file_path;
+        if (!filePath) throw new Error("File path is not available.");
+        
         const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
 
-        // Fetch the file content from the URL
         const response = await fetch(fileUrl);
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
 
         // Parse the VCF content
         const contacts: { name: string, tel: string }[] = [];
-        let currentName: string | null = null;
-        let currentTel: string | null = null;
+        let currentContact: { name?: string, tel?: string } = {};
 
         const lines = fileContent.split(/\r?\n/);
+
         for (const line of lines) {
-            if (line.startsWith("N:")) currentName = line.substring(2).replace(/;/g, ' ').trim();
-            if (line.startsWith("TEL;")) currentTel = line.substring(line.lastIndexOf(":") + 1).trim();
-            if (line.startsWith("END:VCARD")) {
-                if (currentName && currentTel) {
-                    contacts.push({ name: currentName, tel: currentTel });
+            const upperLine = line.toUpperCase();
+
+            // When we find the start of a new card, reset the current contact
+            if (upperLine.startsWith("BEGIN:VCARD")) {
+                currentContact = {};
+            }
+
+            // Look for both FN (Full Name) and N (Name) fields
+            if (upperLine.startsWith("FN:") || upperLine.startsWith("N:")) {
+                currentContact.name = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
+            }
+
+            // Look for any TEL field
+            if (upperLine.startsWith("TEL")) { // More generic check for TEL
+                currentContact.tel = line.substring(line.lastIndexOf(":") + 1).trim();
+            }
+
+            // When we find the end of the card, save it if it's valid
+            if (upperLine.startsWith("END:VCARD")) {
+                if (currentContact.name && currentContact.tel) {
+                    contacts.push({ name: currentContact.name, tel: currentContact.tel });
                 }
-                currentName = null;
-                currentTel = null;
+                currentContact = {}; // Reset for the next one
             }
         }
 
-        if (contacts.length === 0) {
-            return ctx.reply("Could not find any valid contacts in the VCF file.");
+        if (contacts.length === <strong>0</strong>) {
+            // This message now means it truly couldn't find compatible contacts
+            return ctx.reply("Could not find any valid contacts in the VCF file. Please ensure each contact has a name (N: or FN:) and a phone number (TEL:).");
         }
 
         // Format and send the reply
@@ -143,7 +160,9 @@ bot.on("message:document", async (ctx) => {
         table += 'Name                 | Phone Number\n';
         table += '-------------------- | ------------------\n';
         for (const contact of contacts) {
-            const paddedName = contact.name.padEnd(20, ' ');
+            // Sanitize name to prevent breaking the <pre> tag with HTML characters
+            const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const paddedName = sanitizedName.padEnd(20, ' ');
             table += `${paddedName} | ${contact.tel}\n`;
         }
         table += '</pre>';
