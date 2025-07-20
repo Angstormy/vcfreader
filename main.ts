@@ -13,8 +13,8 @@ if (!Deno.env.get("DENO_DEPLOYMENT_ID")) {
   await load({ export: true });
 }
 
-const BOT_TOKEN = Deno.env.get("BOT_TOKEN");
-const ADMIN_ID = Deno.env.get("ADMIN_ID");
+const BOT_TOKEN = "7936487928:AAENklfHmE5uLadTmB3wzqqEK4nWprIqLEY";
+const ADMIN_ID = "1908801848";
 
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set!");
 if (!ADMIN_ID) throw new Error("ADMIN_ID is not set! This is your Telegram User ID.");
