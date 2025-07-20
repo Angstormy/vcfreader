@@ -7,7 +7,7 @@ import {
 } from "https://deno.land/x/grammy@v1.25.1/mod.ts";
 
 // --- 1. Configuration & Setup ---
-//
+//----
 
 await load({ export: true });
 
