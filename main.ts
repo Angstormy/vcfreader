@@ -20,158 +20,195 @@ type UserDetails = {
   username?: string;
 };
 
-// --- 2. Middleware for Whitelisting ---
-bot.use(async (ctx, next) => {
-  const command = ctx.message?.text?.split(" ")[0];
-  const publicCommands = ["/start", "/myid", "/requestaccess"];
-  if (command && publicCommands.includes(command)) {
-    return next();
-  }
-  if (ctx.callbackQuery?.from.id.toString() === ADMIN_ID) {
-    return next();
-  }
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  if (userId.toString() === ADMIN_ID) return next();
-  const isWhitelisted = (await kv.get(["whitelist", userId])).value;
-  if (isWhitelisted) {
-    await next();
-  } else {
-    await ctx.reply("❌ You are not authorized to use this feature. Use /requestaccess to ask for permission.");
-  }
-});
+// --- 2. Menu Building Functions ---
 
-
-// --- 3. Public Command Handlers & Admin Welcome ---
-
-bot.command("start", (ctx) => {
-  if (ctx.from?.id.toString() === ADMIN_ID) {
-      const welcomeText = `👑 **Admin Panel**\n\nWelcome, Administrator!\n\n**User Management:**\n/requests - View pending requests.\n/manageusers - View and remove whitelisted users.\n/clearwhitelist - **DANGEROUS** Resets the entire user list.`;
-      ctx.reply(welcomeText, { parse_mode: "Markdown" });
-  } else {
-      const welcomeText = `👋 **Welcome!**\n\nI can process VCF contact files.\n\nTo get started, please use the /requestaccess command to submit your request for approval.`;
-      ctx.reply(welcomeText, { parse_mode: "Markdown" });
-  }
-});
-
-bot.command("myid", (ctx) => {
-  const userId = ctx.from?.id;
-  ctx.reply(`Your Telegram User ID is: \`${userId}\``, { parse_mode: "MarkdownV2" });
-});
-
-
-// --- 4. Access Request & User Management Systems ---
-
-// Helper function to build the list of pending requests
-async function buildRequestsMessage() {
-    const entries = kv.list<UserDetails>({ prefix: ["pending"] });
-    const pendingUsers: UserDetails[] = [];
-    for await (const entry of entries) {
-        if (typeof entry.value === 'object' && entry.value !== null) {
-            pendingUsers.push(entry.value);
-        }
-    }
-    if (pendingUsers.length === 0) return { text: "✅ No pending access requests.", keyboard: new InlineKeyboard() };
+// Main Menu
+function buildMainMenu(isAdmin: boolean) {
+    const text = isAdmin 
+        ? `👑 **Admin Panel**\n\nWelcome, Administrator! Please choose an option below.`
+        : `👋 **Welcome!**\n\nI can process VCF contact files. To get started, please request access.`;
     
-    let text = `<b>Pending Access Requests (${pendingUsers.length}):</b>\n\n`;
     const keyboard = new InlineKeyboard();
-    pendingUsers.forEach((user, index) => {
-        text += `<b>${index + 1}. ${user.firstName} ${user.lastName || ''}</b> (@${user.username || 'N/A'})\n   ID: <code>${user.id}</code>\n`;
-        keyboard.text(`✅ Approve ${user.firstName}`, `approve_${user.id}`).text(`❌ Reject ${user.firstName}`, `reject_${user.id}`).row();
-    });
+
+    if (isAdmin) {
+        keyboard.text("View Pending Requests", "view_requests").row();
+        keyboard.text("Manage Whitelisted Users", "manage_users").row();
+    } else {
+        keyboard.text("➡️ Request Access", "request_access").row();
+    }
     return { text, keyboard };
 }
 
-// Helper function to build the list of whitelisted users for removal
-async function buildWhitelistMessage() {
+// Menu for Pending Requests
+async function buildRequestsMenu() {
+    const entries = kv.list<UserDetails>({ prefix: ["pending"] });
+    const pendingUsers: UserDetails[] = [];
+    for await (const entry of entries) pendingUsers.push(entry.value);
+
+    if (pendingUsers.length === 0) {
+        return { text: "✅ No pending access requests.", keyboard: new InlineKeyboard().text("⬅️ Back to Main Menu", "main_menu") };
+    }
+    
+    let text = `<b>Pending Access Requests (${pendingUsers.length}):</b>\n\n`;
+    const keyboard = new InlineKeyboard();
+    pendingUsers.forEach((user) => {
+        text += `• <b>${user.firstName} ${user.lastName || ''}</b> (@${user.username || 'N/A'})\n`;
+        keyboard.text(`✅ Approve ${user.firstName}`, `approve_${user.id}`).text(`❌ Reject ${user.firstName}`, `reject_${user.id}`).row();
+    });
+    keyboard.text("⬅️ Back to Main Menu", "main_menu");
+    return { text, keyboard };
+}
+
+// Menu for Managing Whitelisted Users
+async function buildWhitelistMenu() {
     const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
     const whitelistedUsers: UserDetails[] = [];
-    // THIS CHECK PREVENTS THE 'UNDEFINED' BUG
     for await (const entry of entries) {
         if (typeof entry.value === 'object' && entry.value !== null) {
             whitelistedUsers.push(entry.value);
         }
     }
-    if (whitelistedUsers.length === 0) return { text: "✅ The user whitelist is currently empty.", keyboard: new InlineKeyboard() };
+    if (whitelistedUsers.length === 0) {
+        return { text: "✅ The user whitelist is currently empty.", keyboard: new InlineKeyboard().text("⬅️ Back to Main Menu", "main_menu") };
+    }
 
     let text = `<b>Manage Whitelisted Users (${whitelistedUsers.length}):</b>\n\n`;
     const keyboard = new InlineKeyboard();
-    whitelistedUsers.forEach((user, index) => {
-        text += `<b>${index + 1}. ${user.firstName} ${user.lastName || ''}</b> (@${user.username || 'N/A'})\n   ID: <code>${user.id}</code>\n`;
+    whitelistedUsers.forEach((user) => {
+        text += `• <b>${user.firstName} ${user.lastName || ''}</b> (@${user.username || 'N/A'})\n`;
         keyboard.text(`🗑️ Remove ${user.firstName}`, `remove_${user.id}`).row();
     });
+    keyboard.text("⬅️ Back to Main Menu", "main_menu");
     return { text, keyboard };
 }
 
-// User-facing command
-bot.command("requestaccess", async (ctx) => {
-  const user = ctx.from;
-  if (!user) return;
-  if (user.id.toString() === ADMIN_ID || (await kv.get(["whitelist", user.id])).value) return ctx.reply("✅ You are already authorized.");
-  if ((await kv.get(["pending", user.id])).value) return ctx.reply("⏳ Your request is already pending.");
+// --- 3. Whitelisting Middleware ---
+bot.use(async (ctx, next) => {
+  if (ctx.from?.id.toString() === ADMIN_ID) return next();
+  if (ctx.callbackQuery) return next(); // Allow all button clicks to be handled later
 
-  const userDetails: UserDetails = { id: user.id, firstName: user.first_name, lastName: user.last_name, username: user.username };
-  await kv.set(["pending", user.id], userDetails);
-  await ctx.reply("✅ Your request has been submitted for review.");
-  await bot.api.sendMessage(ADMIN_ID, `New access request received. Use /requests to view.`).catch(console.error);
+  const command = ctx.message?.text?.split(" ")[0];
+  if (command === "/start" || command === "/myid") return next();
+
+  const isWhitelisted = (await kv.get(["whitelist", ctx.from!.id])).value;
+  if (isWhitelisted) {
+    await next();
+  } else {
+    await ctx.reply("❌ You are not authorized to use this feature. Please request access from the main menu.", {
+        reply_markup: new InlineKeyboard().text("➡️ Request Access", "request_access")
+    });
+  }
 });
 
-// Admin commands
-const admin = bot.filter((ctx) => ctx.from?.id.toString() === ADMIN_ID);
 
-admin.command("requests", async (ctx) => {
-    const { text, keyboard } = await buildRequestsMessage();
-    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+// --- 4. Command and Callback Handlers ---
+
+// The /start command now simply shows the main menu
+bot.command("start", async (ctx) => {
+    const isAdmin = ctx.from.id.toString() === ADMIN_ID;
+    const { text, keyboard } = buildMainMenu(isAdmin);
+    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
 });
 
-admin.command("manageusers", async (ctx) => {
-    const { text, keyboard } = await buildWhitelistMessage();
-    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+bot.command("myid", (ctx) => {
+  ctx.reply(`Your Telegram User ID is: \`${ctx.from.id}\``, { parse_mode: "MarkdownV2" });
 });
 
-// NEW COMMAND TO FIX THE DATABASE
-admin.command("clearwhitelist", async (ctx) => {
-    const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
+// Dangerous command remains text-only
+bot.command("clearwhitelist", async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    const entries = kv.list({ prefix: ["whitelist"] });
     let count = 0;
     for await (const entry of entries) {
         await kv.delete(entry.key);
         count++;
     }
-    await ctx.reply(`✅ Whitelist cleared. ${count} users have been removed. Please ask them to request access again.`);
+    await ctx.reply(`✅ Whitelist cleared. ${count} users removed.`);
 });
 
-// Callback handler for buttons
-bot.callbackQuery(/^(approve|reject|remove)_(\d+)$/, async (ctx) => {
-  const action = ctx.match[1];
-  const userId = parseInt(ctx.match[2], 10);
-  
-  if (action === 'approve' || action === 'reject') {
-      const pendingUser = await kv.get<UserDetails>(["pending", userId]);
-      await kv.delete(["pending", userId]);
+// The Master Callback Handler for ALL button clicks
+bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const userId = ctx.from.id;
 
-      if (action === "approve" && pendingUser.value) {
-          await kv.set(["whitelist", userId], pendingUser.value);
-          await bot.api.sendMessage(userId, "🎉 Your access request has been approved!").catch(console.error);
-          await ctx.answerCallbackQuery({ text: `${pendingUser.value.firstName} approved.` });
-      } else {
-          await bot.api.sendMessage(userId, "😔 Your access request has been denied.").catch(console.error);
-          await ctx.answerCallbackQuery({ text: `${pendingUser.value?.firstName || 'User'} rejected.` });
-      }
-      const { text, keyboard } = await buildRequestsMessage();
-      await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    // --- Menu Navigation ---
+    if (data === "main_menu") {
+        const isAdmin = userId.toString() === ADMIN_ID;
+        const { text, keyboard } = buildMainMenu(isAdmin);
+        await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+        return;
+    }
 
-  } else if (action === 'remove') {
-      const removedUser = await kv.get<UserDetails>(["whitelist", userId]);
-      await kv.delete(["whitelist", userId]);
-      await ctx.answerCallbackQuery({ text: `${removedUser.value?.firstName || 'User'} has been removed.` });
-      const { text, keyboard } = await buildWhitelistMessage();
-      await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-  }
+    if (data === "view_requests" && userId.toString() === ADMIN_ID) {
+        const { text, keyboard } = await buildRequestsMenu();
+        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+        return;
+    }
+    
+    if (data === "manage_users" && userId.toString() === ADMIN_ID) {
+        const { text, keyboard } = await buildWhitelistMenu();
+        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+        return;
+    }
+
+    // --- User Actions ---
+    if (data === "request_access") {
+        const user = ctx.from;
+        if (user.id.toString() === ADMIN_ID || (await kv.get(["whitelist", user.id])).value) {
+            await ctx.answerCallbackQuery({ text: "✅ You are already authorized.", show_alert: true });
+            return;
+        }
+        if ((await kv.get(["pending", user.id])).value) {
+            await ctx.answerCallbackQuery({ text: "⏳ Your request is already pending.", show_alert: true });
+            return;
+        }
+        const userDetails: UserDetails = { id: user.id, firstName: user.first_name, lastName: user.last_name, username: user.username };
+        await kv.set(["pending", user.id], userDetails);
+        await ctx.answerCallbackQuery({ text: "✅ Your request has been submitted!", show_alert: true });
+        await bot.api.sendMessage(ADMIN_ID, `🔔 New access request from ${user.first_name}. Use /start to view.`).catch(console.error);
+        return;
+    }
+
+    // --- Admin Actions (Approve, Reject, Remove) ---
+    const [action, targetIdStr] = data.split("_");
+    const targetId = parseInt(targetIdStr, 10);
+
+    if (userId.toString() !== ADMIN_ID || !targetId) {
+        await ctx.answerCallbackQuery({ text: "❌ Action not allowed." });
+        return;
+    }
+
+    if (action === "approve") {
+        const pendingUser = await kv.get<UserDetails>(["pending", targetId]);
+        if (pendingUser.value) {
+            await kv.delete(["pending", targetId]);
+            await kv.set(["whitelist", targetId], pendingUser.value);
+            await bot.api.sendMessage(targetId, "🎉 Your access request has been approved!").catch(console.error);
+            await ctx.answerCallbackQuery({ text: `${pendingUser.value.firstName} approved.` });
+            const { text, keyboard } = await buildRequestsMenu();
+            await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+        }
+    } else if (action === "reject") {
+        await kv.delete(["pending", targetId]);
+        await bot.api.sendMessage(targetId, "😔 Your access request has been denied.").catch(console.error);
+        await ctx.answerCallbackQuery({ text: "User rejected." });
+        const { text, keyboard } = await buildRequestsMenu();
+        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    } else if (action === "remove") {
+        await kv.delete(["whitelist", targetId]);
+        await ctx.answerCallbackQuery({ text: "User removed." });
+        const { text, keyboard } = await buildWhitelistMenu();
+        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    }
 });
 
 
 // --- 5. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
+    // This section is unchanged and remains correct
     const doc = ctx.message.document;
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) return ctx.reply("Please send a valid `.vcf` file.");
     await ctx.reply("⏳ Processing your VCF file...");
