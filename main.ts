@@ -1,10 +1,10 @@
+// CORRECT LINE
 import {
   Bot,
   Context,
   InlineKeyboard,
   webhookCallback,
-} from "httpshttps://deno.land/x/grammy@v1.25.1/mod.ts";
-import { load } from "https://deno.land/std@0.224.0/dotenv/mod.ts";
+} from "https://deno.land/x/grammy@v1.25.1/mod.ts";
 
 // --- 1. Configuration & Setup ---
 //
