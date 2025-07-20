@@ -13,15 +13,11 @@ const ADMIN_ID = "1908801848";
 const kv = await Deno.openKv();
 const bot = new Bot(BOT_TOKEN);
 
-// In-memory map to store timers for batch processing
-const batchTimers = new Map<number, number>();
-
-
 // --- 2. Middleware for Whitelisting ---
-// (No changes needed here)
+
 bot.use(async (ctx, next) => {
   const command = ctx.message?.text?.split(" ")[0];
-  const publicCommands = ["/start", "/myid", "/requestaccess", "/processbatch"];
+  const publicCommands = ["/start", "/myid", "/requestaccess"];
   if (command && publicCommands.includes(command)) {
     return next();
   }
@@ -39,84 +35,76 @@ bot.use(async (ctx, next) => {
   }
 });
 
-
 // --- 3. Public Command Handlers ---
 
 bot.command("start", (ctx) => {
-  const welcomeText = `👋 **Welcome!**
+  const welcomeText = `👋 Welcome! I can process VCF contact files.
 
-I can process VCF contact files. You can process files in two ways:
+To get started, you need permission from the administrator.
 
-1️⃣ **Single File:** Just send me a \`.vcf\` file.
-
-2️⃣ **Multiple Files:** Use the /processbatch command. I will wait for you to send all your files and then give you a single, combined report.
-
-To get started, you may need permission. Use /requestaccess if needed.`;
-  ctx.reply(welcomeText, { parse_mode: "Markdown" });
+➡️ Use the /requestaccess command to send an approval request.`;
+  ctx.reply(welcomeText);
 });
 
-// (myid and access request systems remain the same)
-bot.command("myid", (ctx) => { /* ... */ });
-bot.command("requestaccess", async (ctx) => { /* ... */ });
-bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => { /* ... */ });
-
-
-// --- 4. Batch Processing Commands & Logic ---
-
-bot.command("processbatch", async (ctx) => {
-    const userId = ctx.from?.id;
-    if (!userId) return;
-
-    // Set the user's status to "batch mode" in the database
-    await kv.set(["batch_mode", userId], true);
-    // Clear any previously collected contacts for this user
-    await kv.delete(["batch_contacts", userId]);
-
-    await ctx.reply("✅ **Batch mode activated.**\nPlease send all your VCF files now. I will wait 10 seconds after your last file before sending a combined report.", { parse_mode: "Markdown" });
+bot.command("myid", (ctx) => {
+  const userId = ctx.from?.id;
+  ctx.reply(`Your Telegram User ID is: \`${userId}\``, { parse_mode: "MarkdownV2" });
 });
 
-async function processAndSendBatch(userId: number) {
-    // Retrieve all collected contacts from the database
-    const result = await kv.get<any[]>(["batch_contacts", userId]);
-    const allContacts = result.value || [];
+// --- 4. Access Request System ---
 
-    if (allContacts.length === 0) {
-        await bot.api.sendMessage(userId, "⚠️ Batch finished, but no valid contacts were found in the files you sent.");
-    } else {
-        // Build the combined report
-        let table = `✅ **Batch processing complete!**\n\n`;
-        table += `Found a total of ${allContacts.length} contacts across all files.\n\n`;
-        table += '<b>Processed Contacts</b>\n<pre>';
-        table += 'Name                 | Phone Number\n';
-        table += '-------------------- | ------------------\n';
-        for (const contact of allContacts) {
-            const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            const paddedName = sanitizedName.padEnd(20, ' ');
-            table += `${paddedName} | ${contact.tel}\n`;
-        }
-        table += '</pre>';
+bot.command("requestaccess", async (ctx) => {
+  const user = ctx.from;
+  if (!user) return;
+  if (user.id.toString() === ADMIN_ID || (await kv.get(["whitelist", user.id])).value) {
+    return ctx.reply("✅ You are already authorized to use this bot.");
+  }
+  if ((await kv.get(["pending", user.id])).value) {
+    return ctx.reply("⏳ Your access request is already pending. Please wait for the admin to respond.");
+  }
+  let userInfo = `<b>New Access Request</b>\n\n`;
+  userInfo += `<b>Name:</b> ${user.first_name} ${user.last_name || ''}\n`;
+  userInfo += `<b>Username:</b> @${user.username || 'N/A'}\n`;
+  userInfo += `<b>User ID:</b> <code>${user.id}</code>`;
+  const keyboard = new InlineKeyboard()
+    .text("✅ Approve", `approve_${user.id}`)
+    .text("❌ Reject", `reject_${user.id}`);
+  try {
+    await bot.api.sendMessage(ADMIN_ID, userInfo, { parse_mode: "HTML", reply_markup: keyboard });
+    await kv.set(["pending", user.id], true);
+    await ctx.reply("✅ Your access request has been sent to the administrator.");
+  } catch (error) {
+    console.error("Failed to send request to admin:", error);
+    await ctx.reply("Could not send the request. The administrator might have blocked the bot.");
+  }
+});
 
-        await bot.api.sendMessage(userId, table, { parse_mode: "HTML" });
-    }
+bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => {
+  const action = ctx.match[1];
+  const userId = parseInt(ctx.match[2], 10);
+  await kv.delete(["pending", userId]);
+  let newText = ctx.callbackQuery.message?.text || "";
+  if (action === "approve") {
+    await kv.set(["whitelist", userId], true);
+    newText += `\n\n<b>[✅ Approved by admin]</b>`;
+    await bot.api.sendMessage(userId, "🎉 Your access request has been approved! You can now send VCF files.");
+  } else {
+    newText += `\n\n<b>[❌ Rejected by admin]</b>`;
+    await bot.api.sendMessage(userId, "😔 Your access request has been denied by the administrator.");
+  }
+  await ctx.editMessageText(newText, { parse_mode: "HTML" });
+  await ctx.answerCallbackQuery({ text: `Request ${action}d!` });
+});
 
-    // Clean up: exit batch mode and delete stored contacts
-    await kv.delete(["batch_mode", userId]);
-    await kv.delete(["batch_contacts", userId]);
-    batchTimers.delete(userId);
-}
 
-
-// --- 5. VCF File Processing (Updated to handle both single and batch modes) ---
+// --- 5. VCF File Processing Logic (with Filename Display) ---
 bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
-    const userId = ctx.from.id;
 
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
         return ctx.reply("Please send a valid `.vcf` file.");
     }
-
-    // Check if the user is in batch mode
-    const inBatchMode = (await kv.get(["batch_mode", userId])).value;
+    await ctx.reply("⏳ Processing your VCF file...");
 
     try {
         const file = await ctx.getFile();
@@ -129,57 +117,60 @@ bot.on("message:document", async (ctx) => {
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
 
+        const contacts: { name: string, tel: string }[] = [];
         const vcardBlocks = fileContent.split("BEGIN:VCARD");
-        const parsedContacts: { name: string, tel: string }[] = [];
 
         for (const block of vcardBlocks) {
             if (block.trim() === "") continue;
-            let contactName: string | null = null, contactTel: string | null = null;
+
+            let contactName: string | null = null;
+            let contactTel: string | null = null;
             const lines = block.split(/\r?\n/);
+            
             for (const line of lines) {
-                if (line.toUpperCase().startsWith("FN:")) contactName = line.substring(line.indexOf(":") + 1).trim();
-                else if (!contactName && line.toUpperCase().startsWith("N:")) contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
+                if (line.toUpperCase().startsWith("FN:")) {
+                    contactName = line.substring(line.indexOf(":") + 1).trim();
+                } else if (!contactName && line.toUpperCase().startsWith("N:")) {
+                    contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
+                }
+                
                 if (line.toUpperCase().startsWith("TEL")) {
                     const potentialTel = line.substring(line.lastIndexOf(":") + 1).trim();
-                    if (potentialTel) contactTel = potentialTel;
+                    if (potentialTel) {
+                        contactTel = potentialTel;
+                    }
                 }
             }
-            if (contactName && contactTel) parsedContacts.push({ name: contactName, tel: contactTel });
-        }
-
-        if (parsedContacts.length === 0) {
-            await ctx.reply(`⚠️ The file \`${doc.file_name}\` contained no valid contacts.`, { parse_mode: "Markdown" });
-            return;
-        }
-
-        if (inBatchMode) {
-            // --- BATCH MODE LOGIC ---
-            // Add the newly parsed contacts to the existing batch
-            const existingContacts = (await kv.get<any[]>(["batch_contacts", userId])).value || [];
-            await kv.set(["batch_contacts", userId], [...existingContacts, ...parsedContacts]);
-
-            // Clear any existing timer and set a new one (debounce)
-            if (batchTimers.has(userId)) clearTimeout(batchTimers.get(userId));
-            const timerId = setTimeout(() => processAndSendBatch(userId), 10000); // 10 seconds
-            batchTimers.set(userId, timerId);
-
-            // Give the user a small confirmation for each file received
-            await ctx.reply(`👍 Received \`${doc.file_name}\` and added ${parsedContacts.length} contacts to the batch.`, { parse_mode: "Markdown" });
-        } else {
-            // --- SINGLE FILE MODE LOGIC ---
-            const sanitizedFileName = doc.file_name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            let table = `<b>File:</b> <code>${sanitizedFileName}</code>\n\n`;
-            table += '<b>Processed Contacts</b>\n<pre>';
-            table += 'Name                 | Phone Number\n';
-            table += '-------------------- | ------------------\n';
-            for (const contact of parsedContacts) {
-                const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                const paddedName = sanitizedName.padEnd(20, ' ');
-                table += `${paddedName} | ${contact.tel}\n`;
+            
+            if (contactName && contactTel) {
+                contacts.push({ name: contactName, tel: contactTel });
             }
-            table += '</pre>';
-            await ctx.reply(table, { parse_mode: "HTML" });
         }
+
+        if (contacts.length === 0) {
+            return ctx.reply("Could not find any valid contacts. Please ensure each contact in the VCF file has both a name (FN: or N:) and a phone number (TEL:).");
+        }
+
+        // --- CHANGE IS HERE ---
+        // Get and sanitize the file name to display at the top
+        const rawFileName = doc.file_name || "Untitled.vcf";
+        const sanitizedFileName = rawFileName.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+        // Start the reply message with the file name
+        let table = `<b>File:</b> <code>${sanitizedFileName}</code>\n\n`;
+        
+        // Add the table header and content
+        table += '<b>Processed Contacts</b>\n<pre>';
+        table += 'Name                 | Phone Number\n';
+        table += '-------------------- | ------------------\n';
+        for (const contact of contacts) {
+            const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const paddedName = sanitizedName.padEnd(20, ' ');
+            table += `${paddedName} | ${contact.tel}\n`;
+        }
+        table += '</pre>';
+
+        await ctx.reply(table, { parse_mode: "HTML" });
 
     } catch (error) {
         console.error("Error processing VCF file:", error);
@@ -190,5 +181,10 @@ bot.on("message:document", async (ctx) => {
 
 // --- 6. Error Handling & Deployment ---
 bot.catch((err) => console.error(`Error for update ${err.ctx.update.update_id}:`, err.error));
-if (Deno.env.get("DENO_DEPLOYMENT_ID")) { Deno.serve(webhookCallback(bot, "std/http")); } 
-else { console.log("Bot starting..."); bot.start(); }
+
+if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
+  Deno.serve(webhookCallback(bot, "std/http"));
+} else {
+  console.log("Bot starting...");
+  bot.start();
+}
