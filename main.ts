@@ -21,7 +21,6 @@ type UserDetails = {
 };
 
 // --- HELPER FUNCTION ---
-// This function is crucial for safely displaying user-provided text in MarkdownV2.
 function escapeMarkdownV2(text: string): string {
   const chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
   return text.replace(new RegExp(`[${chars.join('\\')}]`, 'g'), '\\$&');
@@ -50,15 +49,17 @@ bot.use(async (ctx, next) => {
 });
 
 
-// --- 3. Public Command Handlers ---
+// --- 3. Public Command Handlers (with Corrected Markdown) ---
 
 bot.command("start", (ctx) => {
     const userId = ctx.from?.id;
     if (userId?.toString() === ADMIN_ID) {
-        const welcomeText = `👑 **Admin Panel**\n\nWelcome, Administrator!\n\n**Admin Commands:**\n/adduser <ID> \- Manually add a user\n/removeuser <ID> \- Remove a user\n/listusers \- See all whitelisted users\n/clearwhitelist \- **DANGEROUS** Resets the entire user list\n\nTo process a file, simply send it to me.`;
+        // --- Admin Welcome Message (FIXED) ---
+        const welcomeText = `👑 *Admin Panel*\n\nWelcome, Administrator\!\n\n*Admin Commands:*\n/adduser <ID> \- Manually add a user\n/removeuser <ID> \- Remove a user\n/listusers \- See all whitelisted users\n/clearwhitelist \- **DANGEROUS** Resets the entire user list\n\nTo process a file, simply send it to me\.`;
         ctx.reply(welcomeText, { parse_mode: "MarkdownV2" });
     } else {
-        const welcomeText = `👋 **Welcome\!**\n\nI can process VCF contact files\.\n\nTo get started, please use the /requestaccess command to ask for permission\.`;
+        // --- Regular User Welcome Message ---
+        const welcomeText = `👋 *Welcome\!*\n\nI can process VCF contact files\.\n\nTo get started, please use the /requestaccess command to ask for permission\.`;
         ctx.reply(welcomeText, { parse_mode: "MarkdownV2" });
     }
 });
@@ -166,14 +167,13 @@ admin.command("listusers", async (ctx) => {
   const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
   const users: UserDetails[] = [];
   for await (const entry of entries) {
-    // This check prevents crashes from old data formats
     if (typeof entry.value === 'object' && entry.value !== null && 'id' in entry.value) {
         users.push(entry.value);
     }
   }
   if (users.length === 0) return ctx.reply("The whitelist is empty.");
 
-  let userList = `📜 **Whitelisted Users (${users.length}):**\n\n`;
+  let userList = `📜 *Whitelisted Users (${users.length}):*\n\n`;
   userList += users.map(user => {
       const name = escapeMarkdownV2(`${user.firstName} ${user.lastName || ''}`.trim());
       const username = user.username ? `(@${escapeMarkdownV2(user.username)})` : '(No username)';
@@ -183,7 +183,6 @@ admin.command("listusers", async (ctx) => {
   await ctx.reply(userList, { parse_mode: "MarkdownV2" });
 });
 
-// NEW COMMAND: To clear old/corrupted data
 admin.command("clearwhitelist", async (ctx) => {
     const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
     let count = 0;
@@ -191,12 +190,11 @@ admin.command("clearwhitelist", async (ctx) => {
         await kv.delete(entry.key);
         count++;
     }
-    await ctx.reply(`✅ Whitelist cleared. ${count} users have been removed.`);
+    await ctx.reply(`✅ Whitelist cleared\. ${count} users have been removed\.`, { parse_mode: "MarkdownV2"});
 });
 
 // --- 5. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
-    // This section is unchanged and remains correct
     const doc = ctx.message.document;
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
         return ctx.reply("Please send a valid `.vcf` file.");
