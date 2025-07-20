@@ -35,23 +35,48 @@ bot.use(async (ctx, next) => {
   }
 });
 
-// --- 3. Public Command Handlers ---
+// --- 3. Public Command Handlers (with Differentiated /start) ---
 
 bot.command("start", (ctx) => {
-  const welcomeText = `👋 Welcome! I can process VCF contact files.
+    const userId = ctx.from?.id;
 
-To get started, you need permission from the administrator.
+    if (userId?.toString() === ADMIN_ID) {
+        // --- Admin Welcome Message ---
+        const welcomeText = `👑 **Admin Panel**
 
-➡️ Use the /requestaccess command to send an approval request.`;
-  ctx.reply(welcomeText);
+Welcome, Administrator! You have access to all user and admin commands.
+
+**Admin Commands:**
+/adduser <ID> - Manually add a user to the whitelist.
+/removeuser <ID> - Remove a user from the whitelist.
+/listusers - See all whitelisted users.
+
+**User Features:**
+- Send a single VCF file to process it instantly.
+- Use /processbatch to send multiple files at once.`;
+        ctx.reply(welcomeText, { parse_mode: "Markdown" });
+    } else {
+        // --- Regular User Welcome Message ---
+        const welcomeText = `👋 **Welcome!**
+
+I can process VCF contact files.
+
+**How to Use:**
+1.  Use the /requestaccess command to ask for permission.
+2.  Once approved, just send me a \`.vcf\` file to process it.
+
+If you have multiple files, you can use the /processbatch command (once approved).`;
+        ctx.reply(welcomeText, { parse_mode: "Markdown" });
+    }
 });
+
 
 bot.command("myid", (ctx) => {
   const userId = ctx.from?.id;
   ctx.reply(`Your Telegram User ID is: \`${userId}\``, { parse_mode: "MarkdownV2" });
 });
 
-// --- 4. Access Request System ---
+// --- 4. Access Request & Admin Systems ---
 
 bot.command("requestaccess", async (ctx) => {
   const user = ctx.from;
@@ -96,70 +121,71 @@ bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery({ text: `Request ${action}d!` });
 });
 
+// --- Manual Admin Commands ---
+const admin = bot.filter((ctx) => ctx.from?.id.toString() === ADMIN_ID);
 
-// --- 5. VCF File Processing Logic (with Filename Display) ---
+admin.command("adduser", async (ctx) => {
+  const userIdToAdd = parseInt(ctx.match, 10);
+  if (isNaN(userIdToAdd)) return ctx.reply("Usage: /adduser <ID>");
+  await kv.set(["whitelist", userIdToAdd], true);
+  await ctx.reply(`✅ User \`${userIdToAdd}\` has been added.`, { parse_mode: "MarkdownV2" });
+});
+
+admin.command("removeuser", async (ctx) => {
+  const userIdToRemove = parseInt(ctx.match, 10);
+  if (isNaN(userIdToRemove)) return ctx.reply("Usage: /removeuser <ID>");
+  await kv.delete(["whitelist", userIdToRemove]);
+  await ctx.reply(`🗑️ User \`${userIdToRemove}\` has been removed.`, { parse_mode: "MarkdownV2" });
+});
+
+admin.command("listusers", async (ctx) => {
+  const entries = kv.list({ prefix: ["whitelist"] });
+  const userIds: number[] = [];
+  for await (const entry of entries) {
+    userIds.push(entry.key[1] as number);
+  }
+  if (userIds.length === 0) return ctx.reply("The whitelist is empty.");
+  const userList = userIds.map(id => `• \`${id}\``).join("\n");
+  await ctx.reply(`📜 **Whitelisted Users:**\n\n${userList}`, { parse_mode: "MarkdownV2" });
+});
+
+// --- 5. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
-
-    if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
-        return ctx.reply("Please send a valid `.vcf` file.");
-    }
+    if (!doc.file_name?.toLowerCase().endsWith(".vcf")) return ctx.reply("Please send a valid `.vcf` file.");
     await ctx.reply("⏳ Processing your VCF file...");
-
     try {
         const file = await ctx.getFile();
         const filePath = file.file_path;
         if (!filePath) throw new Error("File path is not available.");
-        
         const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
-
         const response = await fetch(fileUrl);
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
 
         const contacts: { name: string, tel: string }[] = [];
         const vcardBlocks = fileContent.split("BEGIN:VCARD");
-
         for (const block of vcardBlocks) {
             if (block.trim() === "") continue;
-
             let contactName: string | null = null;
             let contactTel: string | null = null;
             const lines = block.split(/\r?\n/);
-            
             for (const line of lines) {
-                if (line.toUpperCase().startsWith("FN:")) {
-                    contactName = line.substring(line.indexOf(":") + 1).trim();
-                } else if (!contactName && line.toUpperCase().startsWith("N:")) {
-                    contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
-                }
-                
+                if (line.toUpperCase().startsWith("FN:")) contactName = line.substring(line.indexOf(":") + 1).trim();
+                else if (!contactName && line.toUpperCase().startsWith("N:")) contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
                 if (line.toUpperCase().startsWith("TEL")) {
                     const potentialTel = line.substring(line.lastIndexOf(":") + 1).trim();
-                    if (potentialTel) {
-                        contactTel = potentialTel;
-                    }
+                    if (potentialTel) contactTel = potentialTel;
                 }
             }
-            
-            if (contactName && contactTel) {
-                contacts.push({ name: contactName, tel: contactTel });
-            }
+            if (contactName && contactTel) contacts.push({ name: contactName, tel: contactTel });
         }
 
-        if (contacts.length === 0) {
-            return ctx.reply("Could not find any valid contacts. Please ensure each contact in the VCF file has both a name (FN: or N:) and a phone number (TEL:).");
-        }
-
-        // --- CHANGE IS HERE ---
-        // Get and sanitize the file name to display at the top
+        if (contacts.length === 0) return ctx.reply("Could not find any valid contacts. Please ensure each contact has both a name (FN: or N:) and a phone number (TEL:).");
+        
         const rawFileName = doc.file_name || "Untitled.vcf";
         const sanitizedFileName = rawFileName.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-        // Start the reply message with the file name
         let table = `<b>File:</b> <code>${sanitizedFileName}</code>\n\n`;
-        
-        // Add the table header and content
         table += '<b>Processed Contacts</b>\n<pre>';
         table += 'Name                 | Phone Number\n';
         table += '-------------------- | ------------------\n';
@@ -169,9 +195,7 @@ bot.on("message:document", async (ctx) => {
             table += `${paddedName} | ${contact.tel}\n`;
         }
         table += '</pre>';
-
         await ctx.reply(table, { parse_mode: "HTML" });
-
     } catch (error) {
         console.error("Error processing VCF file:", error);
         await ctx.reply("An error occurred while processing the file. The admin has been notified.");
@@ -181,7 +205,6 @@ bot.on("message:document", async (ctx) => {
 
 // --- 6. Error Handling & Deployment ---
 bot.catch((err) => console.error(`Error for update ${err.ctx.update.update_id}:`, err.error));
-
 if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
   Deno.serve(webhookCallback(bot, "std/http"));
 } else {
