@@ -46,7 +46,7 @@ bot.use(async (ctx, next) => {
 
 bot.command("start", (ctx) => {
   if (ctx.from?.id.toString() === ADMIN_ID) {
-      const welcomeText = `👑 **Admin Panel**\n\nWelcome, Administrator!\n\n**User Management:**\n/requests - View and manage pending access requests.\n/manageusers - View and remove whitelisted users.`;
+      const welcomeText = `👑 **Admin Panel**\n\nWelcome, Administrator!\n\n**User Management:**\n/requests - View pending requests.\n/manageusers - View and remove whitelisted users.\n/clearwhitelist - **DANGEROUS** Resets the entire user list.`;
       ctx.reply(welcomeText, { parse_mode: "Markdown" });
   } else {
       const welcomeText = `👋 **Welcome!**\n\nI can process VCF contact files.\n\nTo get started, please use the /requestaccess command to submit your request for approval.`;
@@ -66,8 +66,11 @@ bot.command("myid", (ctx) => {
 async function buildRequestsMessage() {
     const entries = kv.list<UserDetails>({ prefix: ["pending"] });
     const pendingUsers: UserDetails[] = [];
-    for await (const entry of entries) pendingUsers.push(entry.value);
-
+    for await (const entry of entries) {
+        if (typeof entry.value === 'object' && entry.value !== null) {
+            pendingUsers.push(entry.value);
+        }
+    }
     if (pendingUsers.length === 0) return { text: "✅ No pending access requests.", keyboard: new InlineKeyboard() };
     
     let text = `<b>Pending Access Requests (${pendingUsers.length}):</b>\n\n`;
@@ -83,8 +86,12 @@ async function buildRequestsMessage() {
 async function buildWhitelistMessage() {
     const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
     const whitelistedUsers: UserDetails[] = [];
-    for await (const entry of entries) whitelistedUsers.push(entry.value);
-
+    // THIS CHECK PREVENTS THE 'UNDEFINED' BUG
+    for await (const entry of entries) {
+        if (typeof entry.value === 'object' && entry.value !== null) {
+            whitelistedUsers.push(entry.value);
+        }
+    }
     if (whitelistedUsers.length === 0) return { text: "✅ The user whitelist is currently empty.", keyboard: new InlineKeyboard() };
 
     let text = `<b>Manage Whitelisted Users (${whitelistedUsers.length}):</b>\n\n`;
@@ -122,6 +129,17 @@ admin.command("manageusers", async (ctx) => {
     await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
 });
 
+// NEW COMMAND TO FIX THE DATABASE
+admin.command("clearwhitelist", async (ctx) => {
+    const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
+    let count = 0;
+    for await (const entry of entries) {
+        await kv.delete(entry.key);
+        count++;
+    }
+    await ctx.reply(`✅ Whitelist cleared. ${count} users have been removed. Please ask them to request access again.`);
+});
+
 // Callback handler for buttons
 bot.callbackQuery(/^(approve|reject|remove)_(\d+)$/, async (ctx) => {
   const action = ctx.match[1];
@@ -139,7 +157,6 @@ bot.callbackQuery(/^(approve|reject|remove)_(\d+)$/, async (ctx) => {
           await bot.api.sendMessage(userId, "😔 Your access request has been denied.").catch(console.error);
           await ctx.answerCallbackQuery({ text: `${pendingUser.value?.firstName || 'User'} rejected.` });
       }
-
       const { text, keyboard } = await buildRequestsMessage();
       await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
 
@@ -147,7 +164,6 @@ bot.callbackQuery(/^(approve|reject|remove)_(\d+)$/, async (ctx) => {
       const removedUser = await kv.get<UserDetails>(["whitelist", userId]);
       await kv.delete(["whitelist", userId]);
       await ctx.answerCallbackQuery({ text: `${removedUser.value?.firstName || 'User'} has been removed.` });
-      
       const { text, keyboard } = await buildWhitelistMessage();
       await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   }
@@ -156,7 +172,6 @@ bot.callbackQuery(/^(approve|reject|remove)_(\d+)$/, async (ctx) => {
 
 // --- 5. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
-    // ... same as before ...
     const doc = ctx.message.document;
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) return ctx.reply("Please send a valid `.vcf` file.");
     await ctx.reply("⏳ Processing your VCF file...");
