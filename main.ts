@@ -13,13 +13,19 @@ const ADMIN_ID = "1908801848";
 const kv = await Deno.openKv();
 const bot = new Bot(BOT_TOKEN);
 
-// Define a type for our user details object for clarity
 type UserDetails = {
   id: number;
   firstName: string;
   lastName?: string;
   username?: string;
 };
+
+// --- HELPER FUNCTION ---
+// This function is crucial for safely displaying user-provided text in MarkdownV2.
+function escapeMarkdownV2(text: string): string {
+  const chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+  return text.replace(new RegExp(`[${chars.join('\\')}]`, 'g'), '\\$&');
+}
 
 // --- 2. Middleware for Whitelisting ---
 
@@ -44,18 +50,16 @@ bot.use(async (ctx, next) => {
 });
 
 
-// --- 3. Public Command Handlers (with Differentiated /start) ---
+// --- 3. Public Command Handlers ---
 
 bot.command("start", (ctx) => {
     const userId = ctx.from?.id;
     if (userId?.toString() === ADMIN_ID) {
-        // --- Admin Welcome Message ---
-        const welcomeText = `👑 **Admin Panel**\n\nWelcome, Administrator!\n\n**Admin Commands:**\n/adduser <ID> - Manually add a user.\n/removeuser <ID> - Remove a user.\n/listusers - See all whitelisted users.\n\nTo process a file, simply send it to me.`;
-        ctx.reply(welcomeText, { parse_mode: "Markdown" });
+        const welcomeText = `👑 **Admin Panel**\n\nWelcome, Administrator!\n\n**Admin Commands:**\n/adduser <ID> \- Manually add a user\n/removeuser <ID> \- Remove a user\n/listusers \- See all whitelisted users\n/clearwhitelist \- **DANGEROUS** Resets the entire user list\n\nTo process a file, simply send it to me.`;
+        ctx.reply(welcomeText, { parse_mode: "MarkdownV2" });
     } else {
-        // --- Regular User Welcome Message ---
-        const welcomeText = `👋 **Welcome!**\n\nI can process VCF contact files.\n\nTo get started, please use the /requestaccess command to ask for permission.`;
-        ctx.reply(welcomeText, { parse_mode: "Markdown" });
+        const welcomeText = `👋 **Welcome\!**\n\nI can process VCF contact files\.\n\nTo get started, please use the /requestaccess command to ask for permission\.`;
+        ctx.reply(welcomeText, { parse_mode: "MarkdownV2" });
     }
 });
 
@@ -65,7 +69,7 @@ bot.command("myid", (ctx) => {
 });
 
 
-// --- 4. Access Request & Admin Systems (Upgraded) ---
+// --- 4. Access Request & Admin Systems ---
 
 bot.command("requestaccess", async (ctx) => {
   const user = ctx.from;
@@ -77,7 +81,6 @@ bot.command("requestaccess", async (ctx) => {
     return ctx.reply("⏳ Your access request is already pending.");
   }
 
-  // Store the full user details temporarily for when the admin approves
   const userDetails: UserDetails = {
       id: user.id,
       firstName: user.first_name,
@@ -145,10 +148,10 @@ admin.command("adduser", async (ctx) => {
         username: chat.username,
     };
     await kv.set(["whitelist", userIdToAdd], userDetails);
-    await ctx.reply(`✅ User **${chat.first_name}** (@${chat.username || 'N/A'}) has been added.`, { parse_mode: "Markdown" });
+    await ctx.reply(`✅ User *${escapeMarkdownV2(chat.first_name)}* has been added\.`, { parse_mode: "MarkdownV2" });
   } catch (error) {
     console.error("Failed to add user:", error);
-    await ctx.reply(`Could not add user. Make sure the ID is correct and they have not blocked the bot.`);
+    await ctx.reply(`Could not add user\. Make sure the ID is correct and they have not blocked the bot\.`);
   }
 });
 
@@ -156,29 +159,44 @@ admin.command("removeuser", async (ctx) => {
   const userIdToRemove = parseInt(ctx.match, 10);
   if (isNaN(userIdToRemove)) return ctx.reply("Usage: /removeuser <ID>");
   await kv.delete(["whitelist", userIdToRemove]);
-  await ctx.reply(`🗑️ User with ID \`${userIdToRemove}\` has been removed.`, { parse_mode: "MarkdownV2" });
+  await ctx.reply(`🗑️ User with ID \`${userIdToRemove}\` has been removed\.`, { parse_mode: "MarkdownV2" });
 });
 
 admin.command("listusers", async (ctx) => {
   const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
   const users: UserDetails[] = [];
   for await (const entry of entries) {
-    users.push(entry.value);
+    // This check prevents crashes from old data formats
+    if (typeof entry.value === 'object' && entry.value !== null && 'id' in entry.value) {
+        users.push(entry.value);
+    }
   }
   if (users.length === 0) return ctx.reply("The whitelist is empty.");
 
   let userList = `📜 **Whitelisted Users (${users.length}):**\n\n`;
   userList += users.map(user => {
-      const name = `${user.firstName} ${user.lastName || ''}`.trim();
-      const username = user.username ? `(@${user.username})` : '(No username)';
+      const name = escapeMarkdownV2(`${user.firstName} ${user.lastName || ''}`.trim());
+      const username = user.username ? `(@${escapeMarkdownV2(user.username)})` : '(No username)';
       return `• ${name} ${username} \- \`${user.id}\``;
   }).join("\n");
   
   await ctx.reply(userList, { parse_mode: "MarkdownV2" });
 });
 
+// NEW COMMAND: To clear old/corrupted data
+admin.command("clearwhitelist", async (ctx) => {
+    const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
+    let count = 0;
+    for await (const entry of entries) {
+        await kv.delete(entry.key);
+        count++;
+    }
+    await ctx.reply(`✅ Whitelist cleared. ${count} users have been removed.`);
+});
+
 // --- 5. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
+    // This section is unchanged and remains correct
     const doc = ctx.message.document;
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
         return ctx.reply("Please send a valid `.vcf` file.");
@@ -188,44 +206,27 @@ bot.on("message:document", async (ctx) => {
         const file = await ctx.getFile();
         const filePath = file.file_path;
         if (!filePath) throw new Error("File path is not available.");
-        
         const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
         const response = await fetch(fileUrl);
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
-
         const contacts: { name: string, tel: string }[] = [];
         const vcardBlocks = fileContent.split("BEGIN:VCARD");
-
         for (const block of vcardBlocks) {
             if (block.trim() === "") continue;
-            let contactName: string | null = null;
-            let contactTel: string | null = null;
+            let contactName: string | null = null, contactTel: string | null = null;
             const lines = block.split(/\r?\n/);
-            
             for (const line of lines) {
-                if (line.toUpperCase().startsWith("FN:")) {
-                    contactName = line.substring(line.indexOf(":") + 1).trim();
-                } else if (!contactName && line.toUpperCase().startsWith("N:")) {
-                    contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
-                }
-                
+                if (line.toUpperCase().startsWith("FN:")) contactName = line.substring(line.indexOf(":") + 1).trim();
+                else if (!contactName && line.toUpperCase().startsWith("N:")) contactName = line.substring(line.indexOf(":") + 1).replace(/;/g, ' ').trim();
                 if (line.toUpperCase().startsWith("TEL")) {
                     const potentialTel = line.substring(line.lastIndexOf(":") + 1).trim();
-                    if (potentialTel) {
-                        contactTel = potentialTel;
-                    }
+                    if (potentialTel) contactTel = potentialTel;
                 }
             }
-            if (contactName && contactTel) {
-                contacts.push({ name: contactName, tel: contactTel });
-            }
+            if (contactName && contactTel) contacts.push({ name: contactName, tel: contactTel });
         }
-
-        if (contacts.length === 0) {
-            return ctx.reply("Could not find any valid contacts. Please ensure each contact has both a name (FN: or N:) and a phone number (TEL:).");
-        }
-        
+        if (contacts.length === 0) return ctx.reply("Could not find any valid contacts. Please ensure each contact has both a name (FN: or N:) and a phone number (TEL:).");
         const rawFileName = doc.file_name || "Untitled.vcf";
         const sanitizedFileName = rawFileName.replace(/</g, "&lt;").replace(/>/g, "&gt;");
         let table = `<b>File:</b> <code>${sanitizedFileName}</code>\n\n`;
