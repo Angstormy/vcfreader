@@ -85,7 +85,7 @@ async function buildWhitelistMenu() {
 // --- 3. Whitelisting Middleware ---
 bot.use(async (ctx, next) => {
   if (ctx.from?.id.toString() === ADMIN_ID) return next();
-  if (ctx.callbackQuery) return next(); // Allow all button clicks to be handled later
+  if (ctx.callbackQuery) return next(); 
 
   const command = ctx.message?.text?.split(" ")[0];
   if (command === "/start" || command === "/myid") return next();
@@ -103,7 +103,6 @@ bot.use(async (ctx, next) => {
 
 // --- 4. Command and Callback Handlers ---
 
-// The /start command now simply shows the main menu
 bot.command("start", async (ctx) => {
     const isAdmin = ctx.from.id.toString() === ADMIN_ID;
     const { text, keyboard } = buildMainMenu(isAdmin);
@@ -114,7 +113,6 @@ bot.command("myid", (ctx) => {
   ctx.reply(`Your Telegram User ID is: \`${ctx.from.id}\``, { parse_mode: "MarkdownV2" });
 });
 
-// Dangerous command remains text-only
 bot.command("clearwhitelist", async (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_ID) return;
     const entries = kv.list({ prefix: ["whitelist"] });
@@ -131,7 +129,6 @@ bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const userId = ctx.from.id;
 
-    // --- Menu Navigation ---
     if (data === "main_menu") {
         const isAdmin = userId.toString() === ADMIN_ID;
         const { text, keyboard } = buildMainMenu(isAdmin);
@@ -154,7 +151,6 @@ bot.on("callback_query:data", async (ctx) => {
         return;
     }
 
-    // --- User Actions ---
     if (data === "request_access") {
         const user = ctx.from;
         if (user.id.toString() === ADMIN_ID || (await kv.get(["whitelist", user.id])).value) {
@@ -172,7 +168,6 @@ bot.on("callback_query:data", async (ctx) => {
         return;
     }
 
-    // --- Admin Actions (Approve, Reject, Remove) ---
     const [action, targetIdStr] = data.split("_");
     const targetId = parseInt(targetIdStr, 10);
 
@@ -198,8 +193,13 @@ bot.on("callback_query:data", async (ctx) => {
         const { text, keyboard } = await buildRequestsMenu();
         await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
     } else if (action === "remove") {
+        const removedUser = await kv.get<UserDetails>(["whitelist", targetId]);
         await kv.delete(["whitelist", targetId]);
-        await ctx.answerCallbackQuery({ text: "User removed." });
+
+        // --- THIS IS THE NEW LINE ---
+        await bot.api.sendMessage(targetId, "Your access to this bot has been revoked by the administrator.").catch(console.error);
+
+        await ctx.answerCallbackQuery({ text: `${removedUser.value?.firstName || 'User'} has been removed.` });
         const { text, keyboard } = await buildWhitelistMenu();
         await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
     }
@@ -208,7 +208,6 @@ bot.on("callback_query:data", async (ctx) => {
 
 // --- 5. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
-    // This section is unchanged and remains correct
     const doc = ctx.message.document;
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) return ctx.reply("Please send a valid `.vcf` file.");
     await ctx.reply("⏳ Processing your VCF file...");
