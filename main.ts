@@ -4,11 +4,12 @@ import {
   InlineKeyboard,
   webhookCallback,
 } from "https://deno.land/x/grammy@v1.25.1/mod.ts";
+import { type Chat } from "https://deno.land/x/grammy@v1.25.1/types.ts";
 
 // --- 1. Configuration & Setup ---
 
-const BOT_TOKEN = "7936487928:AAENklfHmE5uLadTmB3wzqqEK4nWprIqLEY";
-const ADMIN_ID = "1908801848";
+const BOT_TOKEN = "7936487928:AAENklfHmE5uLadTmB3wzqqEK4nWprIqLEY"; // Replace with your Bot Token
+const ADMIN_ID = "1908801848"; // Replace with your Telegram User ID
 
 const kv = await Deno.openKv();
 const bot = new Bot(BOT_TOKEN);
@@ -22,6 +23,7 @@ type UserDetails = {
 
 // --- 2. Menu Building Functions ---
 
+// [CHANGED] Add User button is now on the main menu
 function buildMainMenu(isAdmin: boolean) {
     const text = isAdmin 
         ? `👑 **Admin Panel**\n\nWelcome, Administrator! Please choose an option below.`
@@ -31,7 +33,8 @@ function buildMainMenu(isAdmin: boolean) {
 
     if (isAdmin) {
         keyboard.text("View Pending Requests", "view_requests").row();
-        keyboard.text("Manage Whitelisted Users", "manage_users").row();
+        // We can place them on the same row for a more compact menu
+        keyboard.text("➕ Add User", "add_user_manual").text("👥 Manage Users", "manage_users").row();
         keyboard.text("⚠️ Clear Whitelist", "confirm_clear_menu").row();
     } else {
         keyboard.text("➡️ Request Access", "request_access").row();
@@ -58,6 +61,7 @@ async function buildRequestsMenu() {
     return { text, keyboard };
 }
 
+// [CHANGED] "Add User Manually" button has been removed from this menu
 async function buildWhitelistMenu() {
     const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
     const whitelistedUsers: UserDetails[] = [];
@@ -66,14 +70,18 @@ async function buildWhitelistMenu() {
             whitelistedUsers.push(entry.value);
         }
     }
+    
+    const keyboard = new InlineKeyboard(); // No longer needs the "Add User" button here
+
     if (whitelistedUsers.length === 0) {
-        return { text: "✅ The user whitelist is currently empty.", keyboard: new InlineKeyboard().text("⬅️ Back to Main Menu", "main_menu") };
+        const text = "ℹ️ The user whitelist is currently empty.";
+        keyboard.text("⬅️ Back to Main Menu", "main_menu");
+        return { text, keyboard };
     }
 
-    let text = `<b>Manage Whitelisted Users (${whitelistedUsers.length}):</b>\n\n`;
-    const keyboard = new InlineKeyboard();
+    let text = `<b>Manage Whitelisted Users (${whitelistedUsers.length}):</b>\nThis screen allows you to view and remove existing users.\n\n`;
     whitelistedUsers.forEach((user) => {
-        text += `• <b>${user.firstName} ${user.lastName || ''}</b> (@${user.username || 'N/A'})\n`;
+        text += `• <b>${user.firstName} ${user.lastName || ''}</b> (@${user.username || 'N/A'}) - <code>${user.id}</code>\n`;
         keyboard.text(`🗑️ Remove ${user.firstName}`, `remove_${user.id}`).row();
     });
     keyboard.text("⬅️ Back to Main Menu", "main_menu");
@@ -96,7 +104,7 @@ bot.use(async (ctx, next) => {
   if (ctx.callbackQuery) return next(); 
 
   const command = ctx.message?.text?.split(" ")[0];
-  if (command === "/start" || command === "/myid") return next();
+  if (command === "/start" || command === "/myid" || command === "/cancel") return next();
 
   const isWhitelisted = (await kv.get(["whitelist", ctx.from!.id])).value;
   if (isWhitelisted) {
@@ -121,7 +129,18 @@ bot.command("myid", (ctx) => {
   ctx.reply(`Your Telegram User ID is: \`${ctx.from.id}\``, { parse_mode: "MarkdownV2" });
 });
 
-// The Master Callback Handler for ALL button clicks
+// [CHANGED] /cancel now returns to the main menu
+bot.command("cancel", async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    await kv.delete(["conversation_state", ctx.from.id]);
+    await ctx.reply("Action cancelled.");
+    // Return to the main admin menu
+    const { text, keyboard } = buildMainMenu(true);
+    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+});
+
+
+// Master Callback Handler
 bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const userId = ctx.from.id;
@@ -130,54 +149,37 @@ bot.on("callback_query:data", async (ctx) => {
         const isAdmin = userId.toString() === ADMIN_ID;
         const { text, keyboard } = buildMainMenu(isAdmin);
         await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: keyboard });
-        await ctx.answerCallbackQuery();
-        return;
-    }
-
-    if (data === "view_requests" && userId.toString() === ADMIN_ID) {
-        const { text, keyboard } = await buildRequestsMenu();
-        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-        await ctx.answerCallbackQuery();
-        return;
-    }
-    
-    if (data === "manage_users" && userId.toString() === ADMIN_ID) {
-        const { text, keyboard } = await buildWhitelistMenu();
-        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-        await ctx.answerCallbackQuery();
-        return;
-    }
-
-    if (data === "confirm_clear_menu" && userId.toString() === ADMIN_ID) {
-        const { text, keyboard } = buildClearConfirmationMenu();
-        await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: keyboard });
-        await ctx.answerCallbackQuery();
-        return;
+        return await ctx.answerCallbackQuery();
     }
 
     if (data === "request_access") {
         const user = ctx.from;
         if (user.id.toString() === ADMIN_ID || (await kv.get(["whitelist", user.id])).value) {
-            await ctx.answerCallbackQuery({ text: "✅ You are already authorized.", show_alert: true });
-            return;
+            return await ctx.answerCallbackQuery({ text: "✅ You are already authorized.", show_alert: true });
         }
         if ((await kv.get(["pending", user.id])).value) {
-            await ctx.answerCallbackQuery({ text: "⏳ Your request is already pending.", show_alert: true });
-            return;
+            return await ctx.answerCallbackQuery({ text: "⏳ Your request is already pending.", show_alert: true });
         }
         const userDetails: UserDetails = { id: user.id, firstName: user.first_name, lastName: user.last_name, username: user.username };
         await kv.set(["pending", user.id], userDetails);
-        await ctx.answerCallbackQuery({ text: "✅ Your request has been submitted!", show_alert: true });
-        // --- ADMIN NOTIFICATION LINE HAS BEEN REMOVED ---
-        return;
+        return await ctx.answerCallbackQuery({ text: "✅ Your request has been submitted!", show_alert: true });
     }
 
     if (userId.toString() !== ADMIN_ID) {
-        await ctx.answerCallbackQuery({ text: "❌ Action not allowed." });
-        return;
+        return await ctx.answerCallbackQuery({ text: "❌ Action not allowed." });
     }
-    
-    if (data === "do_clear_whitelist") {
+
+    // --- Admin-Only Actions ---
+    if (data === "view_requests") {
+        const { text, keyboard } = await buildRequestsMenu();
+        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    } else if (data === "manage_users") {
+        const { text, keyboard } = await buildWhitelistMenu();
+        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    } else if (data === "confirm_clear_menu") {
+        const { text, keyboard } = buildClearConfirmationMenu();
+        await ctx.editMessageText(text, { parse_mode: "Markdown", reply_markup: keyboard });
+    } else if (data === "do_clear_whitelist") {
         const entries = kv.list({ prefix: ["whitelist"] });
         let count = 0;
         for await (const entry of entries) {
@@ -187,45 +189,111 @@ bot.on("callback_query:data", async (ctx) => {
         await ctx.editMessageText(`✅ Whitelist cleared. ${count} users have been removed.`, {
             reply_markup: new InlineKeyboard().text("⬅️ Back to Main Menu", "main_menu")
         });
-        await ctx.answerCallbackQuery({ text: "Whitelist successfully cleared." });
-        return;
-    }
+    } else if (data === "add_user_manual") {
+        await kv.set(["conversation_state", userId], "awaiting_user_id");
+        // [CHANGED] The "Cancel" button now goes back to the main menu
+        await ctx.editMessageText(
+            "Please send the Telegram User ID of the person you want to add.\n\n" +
+            "They can find their ID by sending /myid to me.\n\n" +
+            "Send /cancel at any time to abort.",
+            { reply_markup: new InlineKeyboard().text("⬅️ Cancel and Go Back", "main_menu") }
+        );
+    } else {
+        const [action, targetIdStr] = data.split("_");
+        const targetId = parseInt(targetIdStr, 10);
+        if (!targetId) return await ctx.answerCallbackQuery();
 
-    const [action, targetIdStr] = data.split("_");
-    const targetId = parseInt(targetIdStr, 10);
-    if (!targetId) return;
-
-    if (action === "approve") {
-        const pendingUser = await kv.get<UserDetails>(["pending", targetId]);
-        if (pendingUser.value) {
+        if (action === "approve") {
+            const pendingUser = await kv.get<UserDetails>(["pending", targetId]);
+            if (pendingUser.value) {
+                await kv.delete(["pending", targetId]);
+                await kv.set(["whitelist", targetId], pendingUser.value);
+                await bot.api.sendMessage(targetId, "🎉 Your access request has been approved!").catch(console.error);
+                await ctx.answerCallbackQuery({ text: `${pendingUser.value.firstName} approved.` });
+                const { text, keyboard } = await buildRequestsMenu();
+                await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+            }
+        } else if (action === "reject") {
             await kv.delete(["pending", targetId]);
-            await kv.set(["whitelist", targetId], pendingUser.value);
-            await bot.api.sendMessage(targetId, "🎉 Your access request has been approved!").catch(console.error);
-            await ctx.answerCallbackQuery({ text: `${pendingUser.value.firstName} approved.` });
+            await bot.api.sendMessage(targetId, "😔 Your access request has been denied.").catch(console.error);
+            await ctx.answerCallbackQuery({ text: "User rejected." });
             const { text, keyboard } = await buildRequestsMenu();
             await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+        } else if (action === "remove") {
+            const removedUser = await kv.get<UserDetails>(["whitelist", targetId]);
+            await kv.delete(["whitelist", targetId]);
+            await bot.api.sendMessage(targetId, "Your access to this bot has been revoked by the administrator.").catch(console.error);
+            await ctx.answerCallbackQuery({ text: `${removedUser.value?.firstName || 'User'} removed.` });
+            const { text, keyboard } = await buildWhitelistMenu();
+            await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
         }
-    } else if (action === "reject") {
-        await kv.delete(["pending", targetId]);
-        await bot.api.sendMessage(targetId, "😔 Your access request has been denied.").catch(console.error);
-        await ctx.answerCallbackQuery({ text: "User rejected." });
-        const { text, keyboard } = await buildRequestsMenu();
-        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-    } else if (action === "remove") {
-        const removedUser = await kv.get<UserDetails>(["whitelist", targetId]);
-        await kv.delete(["whitelist", targetId]);
-        await bot.api.sendMessage(targetId, "Your access to this bot has been revoked by the administrator.").catch(console.error);
-        await ctx.answerCallbackQuery({ text: `${removedUser.value?.firstName || 'User'} has been removed.` });
-        const { text, keyboard } = await buildWhitelistMenu();
-        await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+    }
+    await ctx.answerCallbackQuery();
+});
+
+// --- 5. Text Message Handler for Admin Conversations ---
+bot.on("message:text", async (ctx) => {
+    const adminId = ctx.from.id;
+    if (adminId.toString() !== ADMIN_ID) return;
+    
+    const state = (await kv.get<string>(["conversation_state", adminId])).value;
+    if (state !== "awaiting_user_id") return;
+
+    await kv.delete(["conversation_state", adminId]);
+
+    const targetIdStr = ctx.message.text.trim();
+    const targetId = parseInt(targetIdStr, 10);
+
+    if (isNaN(targetId)) {
+        return await ctx.reply("❌ Invalid ID. Please provide a numeric Telegram User ID.");
+    }
+    if (targetId.toString() === ADMIN_ID) {
+        return await ctx.reply("You can't add yourself, you are the admin!");
+    }
+    const isWhitelisted = (await kv.get(["whitelist", targetId])).value;
+    if (isWhitelisted) {
+        return await ctx.reply("✅ This user is already on the whitelist.");
+    }
+    
+    try {
+        const chat = await bot.api.getChat(targetId);
+        if (chat.type !== "private") {
+            return await ctx.reply("❌ This ID belongs to a group or channel, not a user.");
+        }
+
+        const userDetails: UserDetails = {
+            id: chat.id,
+            firstName: chat.first_name,
+            lastName: chat.last_name,
+            username: chat.username
+        };
+        
+        await kv.set(["whitelist", targetId], userDetails);
+
+        await ctx.reply(`✅ Success! User <b>${userDetails.firstName}</b> (<code>${userDetails.id}</code>) has been manually added to the whitelist.`);
+        
+        await bot.api.sendMessage(targetId, "🎉 You have been manually granted access to this bot by the administrator!").catch(err => {
+            console.error(`Failed to notify user ${targetId}:`, err);
+            ctx.reply(`⚠️ Could not notify the user. They might have blocked the bot.`);
+        });
+
+        // Show the main admin menu again
+        const { text, keyboard } = buildMainMenu(true);
+        await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
+
+    } catch (error) {
+        console.error("Error fetching user for manual add:", error);
+        await ctx.reply(`❌ Could not find a user with the ID <code>${targetId}</code>. Please ensure the ID is correct and the user has started this bot at least once.`, { parse_mode: "HTML" });
     }
 });
 
 
-// --- 5. VCF File Processing Logic ---
+// --- 6. VCF File Processing Logic ---
 bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
-    if (!doc.file_name?.toLowerCase().endsWith(".vcf")) return ctx.reply("Please send a valid `.vcf` file.");
+    if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
+        return ctx.reply("Please send a valid `.vcf` file.");
+    }
     await ctx.reply("⏳ Processing your VCF file...");
     try {
         const file = await ctx.getFile();
@@ -251,20 +319,25 @@ bot.on("message:document", async (ctx) => {
             }
             if (contactName && contactTel) contacts.push({ name: contactName, tel: contactTel });
         }
-        if (contacts.length === 0) return ctx.reply("Could not find any valid contacts.");
+        if (contacts.length === 0) {
+            return ctx.reply("Could not find any valid contacts in the file.");
+        }
         const rawFileName = doc.file_name || "Untitled.vcf";
         const sanitizedFileName = rawFileName.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        let table = `<b>File:</b> <code>${sanitizedFileName}</code>\n\n`;
-        table += '<b>Processed Contacts</b>\n<pre>';
-        table += 'Name                 | Phone Number\n';
-        table += '-------------------- | ------------------\n';
+        let message = `<b>File:</b> <code>${sanitizedFileName}</code>\n`;
+        message += `<b>Found ${contacts.length} contacts:</b>\n\n`;
+        const contactEntries: string[] = [];
         for (const contact of contacts) {
             const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            const paddedName = sanitizedName.padEnd(20, ' ');
-            table += `${paddedName} | ${contact.tel}\n`;
+            const sanitizedTel = contact.tel.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            contactEntries.push(`<b>Name:</b> ${sanitizedName}\n<b>Phone:</b> <code>${sanitizedTel}</code>`);
         }
-        table += '</pre>';
-        await ctx.reply(table, { parse_mode: "HTML" });
+        message += contactEntries.join("\n--------------------\n");
+        if (message.length > 4096) {
+             await ctx.reply("The contact list is too large to display as a single message.");
+        } else {
+             await ctx.reply(message, { parse_mode: "HTML" });
+        }
     } catch (error) {
         console.error("Error processing VCF file:", error);
         await ctx.reply("An error occurred while processing the file.");
@@ -272,7 +345,7 @@ bot.on("message:document", async (ctx) => {
 });
 
 
-// --- 6. Error Handling & Deployment ---
+// --- 7. Error Handling & Deployment ---
 bot.catch((err) => console.error(`Error for update ${err.ctx.update.update_id}:`, err.error));
 if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
   Deno.serve(webhookCallback(bot, "std/http"));
