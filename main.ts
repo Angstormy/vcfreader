@@ -223,9 +223,9 @@ bot.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery();
 });
 
-// --- 5. Text Message Handler for Admin Conversations [IMPROVED] ---
-// We use a regular expression to only trigger this for messages that are purely numbers.
-bot.on("message:text", /^\d+$/, async (ctx) => {
+// --- 5. Text Message Handler for Admin Conversations [FIXED] ---
+// Use bot.hears() for regex matching on message text.
+bot.hears(/^\d+$/, async (ctx) => {
     const adminId = ctx.from.id;
     // We only care about the admin in a specific state
     if (adminId.toString() !== ADMIN_ID) return; 
@@ -234,23 +234,20 @@ bot.on("message:text", /^\d+$/, async (ctx) => {
 
     await kv.delete(["conversation_state", adminId]);
 
-    const targetId = parseInt(ctx.message.text, 10); // We know it's a number
+    const targetId = parseInt(ctx.message.text, 10);
 
     if (targetId.toString() === ADMIN_ID) {
-        await ctx.reply("You can't add yourself, you are the admin!");
-        return; // Explicitly return
+        return await ctx.reply("You can't add yourself, you are the admin!");
     }
     const isWhitelisted = (await kv.get(["whitelist", targetId])).value;
     if (isWhitelisted) {
-        await ctx.reply("✅ This user is already on the whitelist.");
-        return; // Explicitly return
+        return await ctx.reply("✅ This user is already on the whitelist.");
     }
     
     try {
         const chat = await bot.api.getChat(targetId);
         if (chat.type !== "private") {
-            await ctx.reply("❌ This ID belongs to a group or channel, not a user.");
-            return; // Explicitly return
+            return await ctx.reply("❌ This ID belongs to a group or channel, not a user.");
         }
 
         const userDetails: UserDetails = {
