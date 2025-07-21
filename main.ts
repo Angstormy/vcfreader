@@ -3,6 +3,7 @@ import {
   Context,
   InlineKeyboard,
   webhookCallback,
+  InputFile,
 } from "https://deno.land/x/grammy@v1.25.1/mod.ts";
 import { type Chat } from "https://deno.land/x/grammy@v1.25.1/types.ts";
 
@@ -115,7 +116,6 @@ bot.use(async (ctx, next) => {
 
 
 // --- 4. Command and Callback Handlers (Unchanged) ---
-
 bot.command("start", async (ctx) => {
     const isAdmin = ctx.from.id.toString() === ADMIN_ID;
     const { text, keyboard } = buildMainMenu(isAdmin);
@@ -135,7 +135,6 @@ bot.command("cancel", async (ctx) => {
 });
 
 bot.on("callback_query:data", async (ctx) => {
-    // This entire section is unchanged and correct.
     const data = ctx.callbackQuery.data;
     const userId = ctx.from.id;
 
@@ -223,17 +222,14 @@ bot.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery();
 });
 
-// --- 5. Text Message Handler for Admin Conversations [FIXED] ---
-// Use bot.hears() for regex matching on message text.
+// --- 5. Text Message Handler for Admin Conversations (Unchanged) ---
 bot.hears(/^\d+$/, async (ctx) => {
     const adminId = ctx.from.id;
-    // We only care about the admin in a specific state
     if (adminId.toString() !== ADMIN_ID) return; 
     const state = (await kv.get<string>(["conversation_state", adminId])).value;
     if (state !== "awaiting_user_id") return;
 
     await kv.delete(["conversation_state", adminId]);
-
     const targetId = parseInt(ctx.message.text, 10);
 
     if (targetId.toString() === ADMIN_ID) {
@@ -271,9 +267,8 @@ bot.hears(/^\d+$/, async (ctx) => {
 });
 
 
-// --- 6. VCF File Processing Logic (Unchanged) ---
+// --- 6. VCF File Processing Logic [CHANGED] ---
 bot.on("message:document", async (ctx) => {
-    // This entire section is unchanged and correct.
     const doc = ctx.message.document;
     if (!doc.file_name?.toLowerCase().endsWith(".vcf")) {
         return ctx.reply("Please send a valid `.vcf` file.");
@@ -288,6 +283,7 @@ bot.on("message:document", async (ctx) => {
         if (!response.ok) throw new Error(`Failed to download file: ${response.statusText}`);
         const fileContent = await response.text();
         const contacts: { name: string, tel: string }[] = [];
+        // VCF parsing logic remains the same
         const vcardBlocks = fileContent.split("BEGIN:VCARD");
         for (const block of vcardBlocks) {
             if (block.trim() === "") continue;
@@ -306,22 +302,48 @@ bot.on("message:document", async (ctx) => {
         if (contacts.length === 0) {
             return ctx.reply("Could not find any valid contacts in the file.");
         }
+
         const rawFileName = doc.file_name || "Untitled.vcf";
         const sanitizedFileName = rawFileName.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        let message = `<b>File:</b> <code>${sanitizedFileName}</code>\n`;
-        message += `<b>Found ${contacts.length} contacts:</b>\n\n`;
-        const contactEntries: string[] = [];
+
+        // Create an array of formatted "contact card" strings
+        const htmlContactEntries: string[] = [];
         for (const contact of contacts) {
             const sanitizedName = contact.name.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             const sanitizedTel = contact.tel.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            contactEntries.push(`<b>Name:</b> ${sanitizedName}\n<b>Phone:</b> <code>${sanitizedTel}</code>`);
+            htmlContactEntries.push(`👤 <b>Name:</b> ${sanitizedName}\n📞 <b>Phone:</b> <code>${sanitizedTel}</code>`);
         }
-        message += contactEntries.join("\n--------------------\n");
-        if (message.length > 4096) {
-             await ctx.reply("The contact list is too large to display as a single message.");
-        } else {
-             await ctx.reply(message, { parse_mode: "HTML" });
+        
+        const messageChunks: string[] = [];
+        const header = `<b>File:</b> <code>${sanitizedFileName}</code>\n<b>Found ${contacts.length} contacts:</b>\n\n`;
+        let currentChunk = header;
+        
+        // Loop through the contact cards and create message chunks
+        for (const entry of htmlContactEntries) {
+            // Check if adding the next entry would exceed the limit (using 4000 for safety)
+            if (currentChunk.length + entry.length + 2 > 4000) {
+                // The current chunk is full. Push it to our array.
+                messageChunks.push(currentChunk);
+                // Start a new chunk with the current entry.
+                currentChunk = entry;
+            } else {
+                // The entry fits. Add it to the current chunk.
+                if (currentChunk !== header) {
+                    currentChunk += '\n\n'; // Add separator if it's not the first entry in the chunk
+                }
+                currentChunk += entry;
+            }
         }
+        // Add the last remaining chunk
+        messageChunks.push(currentChunk);
+        
+        // Send all the chunks as separate messages
+        for (const chunk of messageChunks) {
+            await ctx.reply(chunk, { parse_mode: "HTML" });
+            // Optional: add a small delay to prevent rate-limiting on very large files
+            await new Promise(resolve => setTimeout(resolve, 300)); 
+        }
+
     } catch (error) {
         console.error("Error processing VCF file:", error);
         await ctx.reply("An error occurred while processing the file.");
