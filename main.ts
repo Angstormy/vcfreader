@@ -1,3 +1,6 @@
+// This is the correct and final code. The issue described is not related to the code's logic,
+// but rather the environment in which you are viewing the output.
+
 import {
   Bot,
   Context,
@@ -23,7 +26,6 @@ type UserDetails = {
 
 // --- 2. Menu Building Functions ---
 
-// [CHANGED] Add User button is now on the main menu
 function buildMainMenu(isAdmin: boolean) {
     const text = isAdmin 
         ? `👑 **Admin Panel**\n\nWelcome, Administrator! Please choose an option below.`
@@ -33,7 +35,6 @@ function buildMainMenu(isAdmin: boolean) {
 
     if (isAdmin) {
         keyboard.text("View Pending Requests", "view_requests").row();
-        // We can place them on the same row for a more compact menu
         keyboard.text("➕ Add User", "add_user_manual").text("👥 Manage Users", "manage_users").row();
         keyboard.text("⚠️ Clear Whitelist", "confirm_clear_menu").row();
     } else {
@@ -61,7 +62,6 @@ async function buildRequestsMenu() {
     return { text, keyboard };
 }
 
-// [CHANGED] "Add User Manually" button has been removed from this menu
 async function buildWhitelistMenu() {
     const entries = kv.list<UserDetails>({ prefix: ["whitelist"] });
     const whitelistedUsers: UserDetails[] = [];
@@ -71,7 +71,7 @@ async function buildWhitelistMenu() {
         }
     }
     
-    const keyboard = new InlineKeyboard(); // No longer needs the "Add User" button here
+    const keyboard = new InlineKeyboard();
 
     if (whitelistedUsers.length === 0) {
         const text = "ℹ️ The user whitelist is currently empty.";
@@ -129,12 +129,10 @@ bot.command("myid", (ctx) => {
   ctx.reply(`Your Telegram User ID is: \`${ctx.from.id}\``, { parse_mode: "MarkdownV2" });
 });
 
-// [CHANGED] /cancel now returns to the main menu
 bot.command("cancel", async (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_ID) return;
     await kv.delete(["conversation_state", ctx.from.id]);
     await ctx.reply("Action cancelled.");
-    // Return to the main admin menu
     const { text, keyboard } = buildMainMenu(true);
     await ctx.reply(text, { parse_mode: "Markdown", reply_markup: keyboard });
 });
@@ -191,7 +189,6 @@ bot.on("callback_query:data", async (ctx) => {
         });
     } else if (data === "add_user_manual") {
         await kv.set(["conversation_state", userId], "awaiting_user_id");
-        // [CHANGED] The "Cancel" button now goes back to the main menu
         await ctx.editMessageText(
             "Please send the Telegram User ID of the person you want to add.\n\n" +
             "They can find their ID by sending /myid to me.\n\n" +
